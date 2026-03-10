@@ -1,0 +1,9 @@
+# Local overrides — not committed to prod
+# Example: mount local src for hot-reload during development
+services:
+  brocker:
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+    environment:
+      LOG_LEVEL: DEBUG

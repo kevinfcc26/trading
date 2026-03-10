@@ -1,0 +1,19 @@
+"""Trading domain ports (Protocols)."""
+from __future__ import annotations
+
+from typing import Protocol
+from uuid import UUID
+
+from .entities import Position, Trade
+
+
+class TradeRepository(Protocol):
+    async def save(self, trade: Trade) -> None: ...
+    async def get_by_id(self, trade_id: UUID) -> Trade | None: ...
+    async def get_open_trades(self, symbol: str | None = None) -> list[Trade]: ...
+
+
+class PositionRepository(Protocol):
+    async def save(self, position: Position) -> None: ...
+    async def get_open_positions(self, symbol: str | None = None) -> list[Position]: ...
+    async def close_position(self, position_id: UUID) -> None: ...
