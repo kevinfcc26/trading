@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(poetry run python:*)",
-      "Bash(poetry run pytest:*)"
+      "Bash(poetry run pytest:*)",
+      "Bash(poetry show:*)"
     ]
   }
 }

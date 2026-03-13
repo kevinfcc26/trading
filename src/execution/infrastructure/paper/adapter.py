@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import logging
+import random
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
+from market.domain.entities import Candle, CandleSeries
+from market.domain.value_objects import Timeframe
 from trading.domain.entities import Direction, Order, OrderStatus, Position
 
 logger = logging.getLogger(__name__)
@@ -47,6 +51,37 @@ class PaperBrokerAdapter:
 
     async def get_balance(self) -> float:
         return self._balance
+
+    async def get_candles(
+        self, symbol: str, timeframe: Timeframe, count: int = 1000
+    ) -> CandleSeries:
+        """Generate synthetic random-walk OHLCV candles for backtesting without MT5."""
+        _TF_MINUTES = {
+            "M1": 1, "M5": 5, "M15": 15,
+            "H1": 60, "H4": 240, "D1": 1440,
+        }
+        tf_minutes = _TF_MINUTES.get(timeframe.value, 60)
+        now = datetime.now(tz=timezone.utc)
+        candles: list[Candle] = []
+        price = 1.1000
+        for i in range(count):
+            t = now - timedelta(minutes=tf_minutes * (count - i))
+            change = random.gauss(0, 0.0005)
+            open_ = round(price, 5)
+            close = round(open_ + change, 5)
+            high = round(max(open_, close) + abs(random.gauss(0, 0.0002)), 5)
+            low = round(min(open_, close) - abs(random.gauss(0, 0.0002)), 5)
+            volume = random.uniform(100, 1000)
+            candles.append(Candle(
+                time=t, open=open_, high=high, low=low,
+                close=close, volume=volume, timeframe=timeframe,
+            ))
+            price = close
+        logger.info(
+            "PaperBroker: generated %d synthetic candles for %s %s",
+            count, symbol, timeframe.value,
+        )
+        return CandleSeries(instrument_symbol=symbol, timeframe=timeframe, candles=candles)
 
     # Backwards compat alias
     async def get_account_balance(self) -> float:

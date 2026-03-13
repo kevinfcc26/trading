@@ -1,7 +1,7 @@
 """SimulatedClock — controls simulated time during backtesting."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class SimulatedClock:
@@ -12,7 +12,7 @@ class SimulatedClock:
     """
 
     def __init__(self, start: datetime | None = None) -> None:
-        self._now: datetime = start or datetime.utcnow()
+        self._now: datetime = start or datetime.now(tz=timezone.utc)
 
     def advance(self, to: datetime) -> None:
         """Advance the clock to the given timestamp."""

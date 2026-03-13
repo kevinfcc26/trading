@@ -7,7 +7,7 @@ name = "brocker"
 version = "2.0.0"
 description = "Forex AI Quantitative Trading Platform — DDD + Event-Driven + Hexagonal"
 authors = []
-package-mode = false
+packages = [{include = "brocker", from = "src"}]
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.13"

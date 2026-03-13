@@ -32,6 +32,7 @@ env/
 # ML models (large binaries — store in object storage for prod)
 models/*.joblib
 models/*.pkl
+models/registry/
 
 # Alembic
 alembic/versions/__pycache__/

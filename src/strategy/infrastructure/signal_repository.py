@@ -22,6 +22,8 @@ def _to_domain(m: SignalModel) -> AggregatedSignal:
         context={
             "ta": m.ta_context or {},
             "ml": m.ml_context or {},
+            "mtf_context": m.mtf_context or {},
+            "sr_context": m.sr_context or {},
         },
         reasoning=m.reasoning or "",
         override_reason=m.override_reason or "",
@@ -56,6 +58,8 @@ def _to_model(s: AggregatedSignal) -> SignalModel:
         source=s.source.value,
         ta_context=ta_ctx,
         ml_context=ml_ctx,
+        mtf_context=s.context.get("mtf_context"),
+        sr_context=s.context.get("sr_context"),
         reasoning=s.reasoning,
         component_signals=components_data,
         override_reason=s.override_reason,

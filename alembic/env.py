@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from config.settings import get_settings
-from src.infrastructure.persistence.models import Base
+from infrastructure.persistence.models import Base
 
 config = context.config
 

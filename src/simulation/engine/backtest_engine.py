@@ -5,10 +5,13 @@ Flow per bar:
   2. Update PaperBrokerAdapter price
   3. Check open positions for SL/TP hits
   4. Publish MarketDataReceived
-  5. Run GenerateSignalUseCase on accumulated candles
-  6. Run EvaluateRiskUseCase
-  7. If approved → submit order to PaperBrokerAdapter
-  8. Accumulate trade records for PerformanceAnalyzer
+  5. Build MTF context from pre-fetched D1/H4 slices (if available)
+  6. Detect S/R levels from H4 slice (if sr_detector provided)
+  7. Run TA / ML / AI signals
+  8. Aggregate with aggregate_professional() when context available, else aggregate()
+  9. Run EvaluateRiskUseCase
+  10. If approved → submit order to PaperBrokerAdapter
+  11. Accumulate trade records for PerformanceAnalyzer
 """
 from __future__ import annotations
 
@@ -45,7 +48,14 @@ class BacktestConfig:
     commission_per_lot: float = 7.0
     slippage_pips: float = 0.0001
     warmup_candles: int = 50        # minimum candles before first signal
+    atr_multiplier: float = 2.0     # overridden per timeframe
+    rr_ratio: float = 2.0           # overridden per timeframe
     risk_policy: RiskPolicy = field(default_factory=RiskPolicy)
+
+    def __post_init__(self):
+        # Apply TF-aware values to the risk policy
+        self.risk_policy.atr_multiplier = self.atr_multiplier
+        self.risk_policy.rr_ratio = self.rr_ratio
 
 
 class BacktestEngine:
@@ -55,16 +65,18 @@ class BacktestEngine:
         self,
         config: BacktestConfig,
         ta_strategy: TAStrategy,
-        ml_strategy,           # MLStrategy (optional — may be None)
-        claude_strategy,       # ClaudeStrategy (optional — may be None)
+        ml_strategy,           # MLStrategy | None
+        claude_strategy,       # AI strategy | None
         aggregator: SignalAggregator,
+        sr_detector=None,      # SRDetector | None
     ) -> None:
         self._config = config
         self._ta = ta_strategy
         self._ml = ml_strategy
         self._claude = claude_strategy
         self._aggregator = aggregator
-        self._clock = SimulatedClock()
+        self._sr_detector = sr_detector
+        self._clock = SimulatedClock(start=None)
         self._bus = InMemoryEventBus()
         self._broker = PaperBrokerAdapter(
             initial_balance=config.initial_balance,
@@ -77,30 +89,46 @@ class BacktestEngine:
         self._completed_trades: list[Trade] = []
         self._equity_curve: list[tuple[datetime, float]] = []
 
-    async def run(self, candles: CandleSeries) -> BacktestReport:
-        """Run the backtest over the given candle series."""
+    async def run(
+        self,
+        candles: CandleSeries,
+        d1_candles: CandleSeries | None = None,
+        h4_candles: CandleSeries | None = None,
+    ) -> BacktestReport:
+        """Run the backtest over the given candle series.
+
+        Args:
+            candles: H1 (entry timeframe) candle series.
+            d1_candles: Pre-fetched D1 series for MTF context (optional).
+            h4_candles: Pre-fetched H4 series for MTF context + S/R (optional).
+        """
         await self._broker.connect()
         all_candles = candles.candles
+
+        if all_candles:
+            self._clock = SimulatedClock(start=all_candles[0].time)
+
+        use_professional = (
+            d1_candles is not None
+            and h4_candles is not None
+            and self._sr_detector is not None
+        )
 
         for i, candle in enumerate(all_candles):
             if i < self._config.warmup_candles:
                 continue
 
-            # Advance clock and price
             self._clock.advance(candle.time)
             self._broker.set_current_price(candle.close)
 
-            # Check SL/TP on open positions
             await self._check_stops(candle)
 
-            # Build rolling candle series for strategy
             window = CandleSeries(
                 instrument_symbol=candles.instrument_symbol,
                 timeframe=candles.timeframe,
                 candles=all_candles[: i + 1],
             )
 
-            # Publish market data event
             await self._bus.publish(
                 MarketDataReceived(
                     symbol=candles.instrument_symbol,
@@ -110,36 +138,68 @@ class BacktestEngine:
                 )
             )
 
-            # Generate signal
-            ta_signal = await self._ta.generate(window)
+            # Build MTF + S/R context from pre-fetched higher-TF candles
+            mtf_context = None
+            sr_context = None
+            if use_professional:
+                mtf_context = _build_mtf_context(
+                    candles.instrument_symbol, candle.time,
+                    d1_candles, h4_candles, window,
+                )
+                h4_slice = _slice_before(h4_candles, candle.time)
+                if h4_slice is not None:
+                    sr_context = self._sr_detector.detect(h4_slice, candle.close)
 
-            # ML and Claude are optional
+            # Generate signals
+            ta_signal = await self._ta.generate(window, mtf_context=mtf_context)
+
             if self._ml is not None:
                 try:
                     ml_signal = await self._ml.generate(window)
                 except Exception:
-                    ml_signal = ta_signal   # fallback
+                    ml_signal = ta_signal
             else:
                 ml_signal = ta_signal
 
             if self._claude is not None:
                 try:
                     claude_signal = await self._claude.generate(
-                        window, ta_signal=ta_signal, ml_signal=ml_signal
+                        window,
+                        ta_signal=ta_signal,
+                        ml_signal=ml_signal,
+                        mtf_context=mtf_context,
+                        sr_context=sr_context,
                     )
                 except Exception:
                     claude_signal = ta_signal
             else:
                 claude_signal = ta_signal
 
-            aggregated = self._aggregator.aggregate(ta_signal, ml_signal, claude_signal)
+            # Aggregate — professional only when AI is active (has real context to evaluate)
+            # Without AI, use simple weighted aggregate to avoid over-filtering
+            if use_professional and self._claude is not None:
+                aggregated = self._aggregator.aggregate_professional(
+                    ta_signal, ml_signal, claude_signal,
+                    mtf_context=mtf_context,
+                    sr_context=sr_context,
+                )
+            else:
+                aggregated = self._aggregator.aggregate(ta_signal, ml_signal, claude_signal)
 
-            # Skip HOLD
+            logger.info(
+                "[%s] TA=%s(%.2f) ML=%s(%.2f) AI=%s(%.2f) → %s(%.2f)%s",
+                candle.time.strftime("%Y-%m-%d %H:%M"),
+                ta_signal.direction.value, ta_signal.confidence,
+                ml_signal.direction.value, ml_signal.confidence,
+                claude_signal.direction.value, claude_signal.confidence,
+                aggregated.direction.value, aggregated.confidence,
+                f" [{aggregated.override_reason}]" if aggregated.override_reason else "",
+            )
+
             if aggregated.direction == Direction.HOLD:
                 self._equity_curve.append((candle.time, self._broker._balance))
                 continue
 
-            # Risk evaluation
             open_positions = await self._broker.fetch_positions()
             balance = await self._broker.get_balance()
 
@@ -155,7 +215,6 @@ class BacktestEngine:
                 self._equity_curve.append((candle.time, self._broker._balance))
                 continue
 
-            # Submit order to paper broker
             order = Order(
                 instrument_symbol=candles.instrument_symbol,
                 direction=aggregated.direction,
@@ -169,7 +228,6 @@ class BacktestEngine:
 
             self._equity_curve.append((candle.time, self._broker._balance))
 
-        # Close remaining open positions at last price
         open_positions = await self._broker.fetch_positions()
         for pos in open_positions:
             await self._broker.close_position(pos)
@@ -215,8 +273,7 @@ class BacktestEngine:
                 self._completed_trades.append(trade)
                 logger.debug(
                     "SL/TP hit: %s PnL=%.2f %s",
-                    pos.instrument_symbol,
-                    pnl,
+                    pos.instrument_symbol, pnl,
                     "SL" if hit_sl else "TP",
                 )
 
@@ -234,3 +291,46 @@ class BacktestEngine:
             metrics=metrics,
             equity_curve=self._equity_curve,
         )
+
+
+# ── Helpers for MTF context from pre-fetched data ─────────────────────────────
+
+def _slice_before(series: CandleSeries, bar_time: datetime) -> CandleSeries | None:
+    """Return candles with time <= bar_time (no lookahead)."""
+    sliced = [c for c in series.candles if c.time <= bar_time]
+    if not sliced:
+        return None
+    return CandleSeries(
+        instrument_symbol=series.instrument_symbol,
+        timeframe=series.timeframe,
+        candles=sliced,
+    )
+
+
+def _build_mtf_context(
+    symbol: str,
+    bar_time: datetime,
+    d1_candles: CandleSeries,
+    h4_candles: CandleSeries,
+    h1_window: CandleSeries,
+):
+    """Build MultiTimeframeContext from sliced higher-TF series."""
+    from datetime import timezone
+    from strategy.domain.value_objects import MultiTimeframeContext
+    from strategy.infrastructure.multi_timeframe_analyzer import _analyze_trend
+
+    d1_slice = _slice_before(d1_candles, bar_time)
+    h4_slice = _slice_before(h4_candles, bar_time)
+
+    d1_analysis = _analyze_trend(d1_slice) if d1_slice else _analyze_trend(h1_window)
+    h4_analysis = _analyze_trend(h4_slice) if h4_slice else _analyze_trend(h1_window)
+    h1_analysis = _analyze_trend(h1_window)
+
+    tz = bar_time.tzinfo or timezone.utc
+    return MultiTimeframeContext(
+        symbol=symbol,
+        analysis_time=bar_time.replace(tzinfo=tz),
+        d1=d1_analysis,
+        h4=h4_analysis,
+        h1=h1_analysis,
+    )

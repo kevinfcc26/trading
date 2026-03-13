@@ -74,10 +74,19 @@ class PerformanceMetrics:
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
 
         # Duration
+        from datetime import timezone as _tz
+
+        def _to_utc(dt):
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=_tz.utc)
+            return dt
+
         durations = []
         for t in closed:
             if t.opened_at and t.closed_at:
-                durations.append((t.closed_at - t.opened_at).total_seconds() / 3600)
+                durations.append(
+                    (_to_utc(t.closed_at) - _to_utc(t.opened_at)).total_seconds() / 3600
+                )
 
         # Sharpe & Sortino from equity curve returns
         sharpe = 0.0

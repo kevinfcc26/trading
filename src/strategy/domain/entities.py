@@ -19,6 +19,8 @@ class SignalSource(str, Enum):
     TA = "TA"
     ML = "ML"
     CLAUDE = "CLAUDE"
+    OLLAMA = "OLLAMA"
+    NONE = "NONE"
     AGGREGATED = "AGGREGATED"
 
 

@@ -1,41 +1,46 @@
-"""ClaudeStrategy — Claude as professional trading analyst."""
+"""OllamaStrategy — local LLM reasoning layer via Ollama REST API."""
 from __future__ import annotations
 
 import json
 import logging
 
-import anthropic
-from tenacity import retry, stop_after_attempt, wait_exponential
+import httpx
 
 from market.domain.entities import CandleSeries
 from strategy.domain.entities import Direction, Signal, SignalSource
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-sonnet-4-6"
+_DEFAULT_MODEL = "llama3.2"
+_DEFAULT_URL = "http://localhost:11434"
+_TIMEOUT = 180.0
 
-_SYSTEM_PROMPT = """You are a senior institutional FX trader with 20 years of experience.
-Your role is to evaluate trade setups using multi-timeframe analysis, key support/resistance levels,
-and technical/ML signals. You think in terms of confluences, risk/reward, and market structure.
+_SYSTEM_PROMPT = """You are an FX trading signal classifier. Analyze the provided market data and output a directional signal.
 
-You must respond ONLY with valid JSON — no markdown, no explanation outside the JSON.
-Required fields: direction, confidence, reasoning.
-Optional fields: stop_loss_note, invalidation.
+Respond ONLY with valid JSON — no markdown, no text outside JSON:
+{
+  "direction": "BUY" | "SELL" | "HOLD",
+  "confidence": <float 0.0-1.0>,
+  "reasoning": "<1-2 sentences>",
+  "stop_loss_note": "<nearest structural level against the trade>",
+  "invalidation": "<what price action invalidates this setup>"
+}
 
-Rules:
-- A confident HOLD is better than a forced trade.
-- Never trade against D1 trend without extraordinary confluence.
-- Require minimum 2:1 R:R. If not achievable, output HOLD.
-- Capital preservation over profit chasing.
+Decision rules:
+- BUY: D1/H4 trend is bullish AND price near support OR TA/ML signals align bullish.
+- SELL: D1/H4 trend is bearish AND price near resistance OR TA/ML signals align bearish.
+- HOLD: signals conflict, no clear structure, or inside tight consolidation.
+- Use HOLD sparingly — only when direction is genuinely unclear.
+- Confidence reflects how strongly the evidence supports the direction (0.5=uncertain, 0.9=very clear).
 """
 
 
-class ClaudeStrategy:
-    """Uses Claude as a professional reasoning layer on top of TA/ML signals."""
+class OllamaStrategy:
+    """Uses a local Ollama LLM as the professional reasoning layer."""
 
-    def __init__(self, api_key: str, model: str = _MODEL) -> None:
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
+    def __init__(self, model: str = _DEFAULT_MODEL, base_url: str = _DEFAULT_URL) -> None:
         self._model = model
+        self._base_url = base_url.rstrip("/")
 
     async def generate(self, candles: CandleSeries, **kwargs) -> Signal:
         ta_signal: Signal | None = kwargs.get("ta_signal")
@@ -46,7 +51,6 @@ class ClaudeStrategy:
         if ta_signal is None or ml_signal is None:
             return self._hold(candles, "No TA/ML context provided")
 
-        # Build prompt — professional if context available, simple fallback
         if mtf_context is not None:
             from strategy.infrastructure.professional_prompt_builder import ProfessionalPromptBuilder
             prompt = ProfessionalPromptBuilder().build(
@@ -56,17 +60,15 @@ class ClaudeStrategy:
             prompt = _build_simple_prompt(candles, ta_signal, ml_signal)
 
         try:
-            result = await self._call_api(prompt)
+            result = await self._call_ollama(prompt)
         except Exception as exc:
-            cause = getattr(getattr(exc, "last_attempt", None), "exception", lambda: exc)()
-            body = getattr(cause, "body", None) or getattr(cause, "response", None)
-            logger.error("Claude API failed [%s]: %s | body=%s", type(cause).__name__, cause, body)
-            return self._hold(candles, f"API error: {exc}")
+            logger.error("Ollama API failed: %s", exc)
+            return self._hold(candles, f"Ollama error: {exc}")
 
         context = {}
-        if "stop_loss_note" in result:
+        if result.get("stop_loss_note"):
             context["stop_loss_note"] = result["stop_loss_note"]
-        if "invalidation" in result:
+        if result.get("invalidation"):
             context["invalidation"] = result["invalidation"]
 
         return Signal(
@@ -74,20 +76,26 @@ class ClaudeStrategy:
             timeframe=candles.timeframe,
             direction=result["direction"],
             confidence=result["confidence"],
-            source=SignalSource.CLAUDE,
+            source=SignalSource.OLLAMA,
             reasoning=result["reasoning"],
             context=context,
         )
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def _call_api(self, user_prompt: str) -> dict:
-        message = await self._client.messages.create(
-            model=self._model,
-            max_tokens=512,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        return _parse_response(message.content[0].text)
+    async def _call_ollama(self, prompt: str) -> dict:
+        payload = {
+            "model": self._model,
+            "prompt": f"{_SYSTEM_PROMPT}\n\n{prompt}",
+            "stream": False,
+            "format": "json",
+            "options": {"temperature": 0.1, "num_predict": 400},
+        }
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.post(f"{self._base_url}/api/generate", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            raw = data.get("response", "")
+            logger.debug("Ollama raw response: %s", raw[:300])
+            return _parse_response(raw)
 
     def _hold(self, candles: CandleSeries, reason: str) -> Signal:
         return Signal(
@@ -95,7 +103,7 @@ class ClaudeStrategy:
             timeframe=candles.timeframe,
             direction=Direction.HOLD,
             confidence=0.0,
-            source=SignalSource.CLAUDE,
+            source=SignalSource.OLLAMA,
             reasoning=reason,
         )
 
@@ -103,7 +111,8 @@ class ClaudeStrategy:
 def _build_simple_prompt(candles: CandleSeries, ta_signal: Signal, ml_signal: Signal) -> str:
     recent = candles.candles[-5:] if candles.candles else []
     candles_str = "\n".join(
-        f"  [{c.time.isoformat()}] O={c.open:.5f} H={c.high:.5f} L={c.low:.5f} C={c.close:.5f}"
+        f"  [{c.time.strftime('%Y-%m-%d %H:%M')}] O={c.open:.5f} H={c.high:.5f} "
+        f"L={c.low:.5f} C={c.close:.5f} V={c.volume:.0f}"
         for c in recent
     )
     ta_ctx = json.dumps(
@@ -113,9 +122,9 @@ def _build_simple_prompt(candles: CandleSeries, ta_signal: Signal, ml_signal: Si
         {k: round(v, 6) if isinstance(v, float) and v == v else 0.0
          for k, v in ml_signal.context.items()}, indent=2)
 
-    return f"""# {candles.instrument_symbol} {candles.timeframe.value} — Signal Evaluation
+    return f"""# {candles.instrument_symbol} {candles.timeframe.value}
 
-Recent candles:
+Candles:
 {candles_str}
 
 TA: {ta_signal.direction.value} conf={ta_signal.confidence:.2f}
@@ -124,7 +133,7 @@ TA: {ta_signal.direction.value} conf={ta_signal.confidence:.2f}
 ML: {ml_signal.direction.value} conf={ml_signal.confidence:.2f}
 {ml_ctx}
 
-Evaluate this setup and respond with JSON only."""
+Evaluate and respond with JSON only."""
 
 
 def _parse_response(raw: str) -> dict:

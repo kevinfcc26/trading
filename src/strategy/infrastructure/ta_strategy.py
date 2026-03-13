@@ -65,6 +65,12 @@ class TAStrategy:
         bb_upper = float(last.get(bb_upper_col, close * 1.01))
         bb_lower = float(last.get(bb_lower_col, close * 0.99))
 
+        # MTF bias filter — skip trades against D1 trend
+        mtf_context = kwargs.get("mtf_context")
+        mtf_bias = Direction.HOLD
+        if mtf_context is not None:
+            mtf_bias = mtf_context.dominant_bias
+
         buy_score = 0
         sell_score = 0
         total_conditions = 4
@@ -99,6 +105,11 @@ class TAStrategy:
             direction = Direction.HOLD
             confidence = 0.0
 
+        # Penalize signals that fight the D1 macro trend
+        if mtf_bias != Direction.HOLD and direction != Direction.HOLD:
+            if direction != mtf_bias:
+                confidence *= 0.5  # heavy penalty for counter-trend signal
+
         context = {
             "rsi": rsi,
             "ema_fast": ema_fast_val,
@@ -108,6 +119,7 @@ class TAStrategy:
             "bb_upper": bb_upper,
             "bb_lower": bb_lower,
             "close": close,
+            "mtf_bias": mtf_bias.value,
         }
 
         return Signal(

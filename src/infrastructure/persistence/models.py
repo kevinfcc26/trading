@@ -34,6 +34,8 @@ class SignalModel(Base):
     ml_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
     component_signals: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    mtf_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    sr_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

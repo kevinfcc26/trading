@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from market.domain.value_objects import Timeframe
-from trading.domain.entities import Candle, Direction, Order, OrderStatus, Position
+from trading.domain.entities import Direction, Order, OrderStatus, Position
 
 # Mirrored constants (no MT5 import here — keeps mapper testable)
 _MT5_ORDER_TYPE_BUY = 0
@@ -13,7 +13,7 @@ _MT5_ORDER_TYPE_SELL = 1
 
 
 def mt5_tick_to_price(tick: Any) -> float:
-    return float(tick.bid)
+    return float(tick["bid"])
 
 
 def mt5_candles_to_domain(
@@ -25,12 +25,12 @@ def mt5_candles_to_domain(
 
     return [
         MarketCandle(
-            time=datetime.fromtimestamp(r.time, tz=timezone.utc),
-            open=float(r.open),
-            high=float(r.high),
-            low=float(r.low),
-            close=float(r.close),
-            volume=float(r.tick_volume),
+            time=datetime.fromtimestamp(r["time"], tz=timezone.utc),
+            open=float(r["open"]),
+            high=float(r["high"]),
+            low=float(r["low"]),
+            close=float(r["close"]),
+            volume=float(r["tick_volume"]),
             timeframe=timeframe,
         )
         for r in rates
@@ -38,16 +38,16 @@ def mt5_candles_to_domain(
 
 
 def mt5_position_to_domain(pos: Any) -> Position:
-    side = Direction.BUY if pos.type == _MT5_ORDER_TYPE_BUY else Direction.SELL
+    side = Direction.BUY if pos["type"] == _MT5_ORDER_TYPE_BUY else Direction.SELL
     return Position(
-        broker_position_id=str(pos.ticket),
-        instrument_symbol=pos.symbol,
+        broker_position_id=str(pos["ticket"]),
+        instrument_symbol=str(pos["symbol"]),
         side=side,
-        volume=float(pos.volume),
-        entry_price=float(pos.price_open),
-        stop_loss=float(pos.sl) if pos.sl else None,
-        take_profit=float(pos.tp) if pos.tp else None,
-        opened_at=datetime.fromtimestamp(pos.time, tz=timezone.utc),
+        volume=float(pos["volume"]),
+        entry_price=float(pos["price_open"]),
+        stop_loss=float(pos["sl"]) if pos["sl"] else None,
+        take_profit=float(pos["tp"]) if pos["tp"] else None,
+        opened_at=datetime.fromtimestamp(pos["time"], tz=timezone.utc),
         is_open=True,
     )
 

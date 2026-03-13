@@ -56,12 +56,15 @@ class XGBoostTrainer:
         # Remove xgboost-specific keys before passing to sklearn API
         params = {k: v for k, v in self._hyperparams.items() if k != "eval_metric"}
 
-        clf = xgb.XGBClassifier(**params)
+        from sklearn.utils.class_weight import compute_sample_weight
+        sample_weights = compute_sample_weight("balanced", y_train)
+
+        clf = xgb.XGBClassifier(**params, early_stopping_rounds=20)
         clf.fit(
             X_train,
             y_train,
+            sample_weight=sample_weights,
             eval_set=[(X_val, y_val)],
-            early_stopping_rounds=20,
             verbose=False,
         )
         self.model = clf
