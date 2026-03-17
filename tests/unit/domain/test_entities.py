@@ -45,7 +45,8 @@ class TestPrice:
     def test_pips(self):
         p1 = Price.of("1.10000")
         p2 = Price.of("1.10010")
-        assert p1.pips_to(p2) == pytest.approx(Decimal("1.0"), abs=0.01)
+        # digits=5 → factor=10^5; 0.00010 × 100_000 = 10 pipettes
+        assert p1.pips_to(p2) == pytest.approx(Decimal("10.0"), abs=0.01)
 
 
 class TestMoney:

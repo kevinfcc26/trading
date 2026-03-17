@@ -114,6 +114,13 @@ class Settings(BaseSettings):
     sr_swing_window: int = 5
     sr_max_levels: int = 8
 
+    # ── Session filter ────────────────────────────────────────────────────────
+    # Only trade during active sessions. Default: London open → NY close (07–21 UTC).
+    # Set SESSION_FILTER_ENABLED=false in .env to disable (e.g. for backtesting).
+    session_filter_enabled: bool = True
+    session_start_utc: int = 7    # London open
+    session_end_utc: int = 21     # NY close
+
     # ── Professional aggregator ───────────────────────────────────────────────
     use_professional_aggregator: bool = True
 

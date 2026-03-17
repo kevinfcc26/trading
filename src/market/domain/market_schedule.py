@@ -77,6 +77,49 @@ def seconds_until_next_candle(timeframe: Timeframe, dt: datetime | None = None) 
     return max(1.0, (nxt - dt).total_seconds())
 
 
+def is_active_session(
+    dt: datetime | None = None,
+    start_hour_utc: int = 7,
+    end_hour_utc: int = 21,
+) -> bool:
+    """True during active trading sessions (London + New York by default).
+
+    Default window 07:00–21:00 UTC covers:
+      - London open  : 07:00 UTC
+      - NY open      : 13:00 UTC
+      - NY close     : 21:00 UTC  (London/NY overlap = 13:00–16:00, best liquidity)
+
+    Asian session (21:00–07:00 UTC) is excluded: low volume, choppy price action,
+    wider spreads — a professional trader avoids new entries during this window.
+    """
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    hour = dt.hour
+    if start_hour_utc <= end_hour_utc:
+        return start_hour_utc <= hour < end_hour_utc
+    # Wrap-around (e.g. 22:00–06:00) — not used by default but supported
+    return hour >= start_hour_utc or hour < end_hour_utc
+
+
+def seconds_until_session_open(
+    dt: datetime | None = None,
+    start_hour_utc: int = 7,
+) -> float:
+    """Seconds until the next session open (default: London 07:00 UTC)."""
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    candidate = dt.replace(hour=start_hour_utc, minute=0, second=0, microsecond=0)
+    if candidate <= dt:
+        candidate += timedelta(days=1)
+    return (candidate - dt).total_seconds()
+
+
 def seconds_until_market_open(dt: datetime | None = None) -> float:
     """Seconds until the next Forex session open (Sunday 22:00 UTC).
 
