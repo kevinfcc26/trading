@@ -57,15 +57,17 @@ def test_claude_veto_overrides_consensus():
     assert "VETO" in result.override_reason
 
 
-def test_claude_veto_does_not_fire_on_hold():
+def test_claude_hold_above_threshold_applies_hold_veto():
     agg = SignalAggregator(claude_veto_threshold=0.70)
     ta = _make_signal(Direction.BUY, 0.8, SignalSource.TA)
     ml = _make_signal(Direction.BUY, 0.8, SignalSource.ML)
-    claude = _make_signal(Direction.HOLD, 0.90, SignalSource.CLAUDE)  # HOLD cannot veto
+    claude = _make_signal(Direction.HOLD, 0.90, SignalSource.CLAUDE)  # HOLD + high confidence
 
     result = agg.aggregate(ta, ml, claude)
 
-    assert result.override_reason == ""
+    # AI HOLD veto: Claude HOLD >= veto_threshold forces the result to HOLD
+    assert result.direction == Direction.HOLD
+    assert "AI HOLD veto" in result.override_reason
 
 
 def test_aggregated_signal_preserves_components():

@@ -228,9 +228,33 @@ class BacktestEngine:
 
             self._equity_curve.append((candle.time, self._broker._balance))
 
+        last_candle_time = all_candles[-1].time if all_candles else self._clock.now()
+        last_price = all_candles[-1].close if all_candles else 0.0
         open_positions = await self._broker.fetch_positions()
         for pos in open_positions:
+            self._broker.set_current_price(last_price)
             await self._broker.close_position(pos)
+            pnl = calculate_pnl(pos.side, pos.entry_price, last_price, pos.volume)
+            trade = Trade(
+                instrument_symbol=pos.instrument_symbol,
+                side=pos.side,
+                volume=pos.volume,
+                entry_price=pos.entry_price,
+                exit_price=last_price,
+                stop_loss=pos.stop_loss,
+                take_profit=pos.take_profit,
+                realized_pnl=pnl,
+                opened_at=pos.opened_at,
+                closed_at=self._clock.now(),
+            )
+            self._completed_trades.append(trade)
+            logger.info(
+                "Position closed at end of backtest: %s PnL=%+.2f  balance=%.2f",
+                pos.instrument_symbol, pnl, self._broker._balance,
+            )
+
+        # Registrar balance final en equity curve para que el reporte sea correcto
+        self._equity_curve.append((last_candle_time, self._broker._balance))
 
         return self._build_report(candles)
 
@@ -271,10 +295,12 @@ class BacktestEngine:
                     closed_at=self._clock.now(),
                 )
                 self._completed_trades.append(trade)
-                logger.debug(
-                    "SL/TP hit: %s PnL=%.2f %s",
-                    pos.instrument_symbol, pnl,
+                logger.info(
+                    "%s hit on %s — PnL=%+.2f  balance=%.2f",
                     "SL" if hit_sl else "TP",
+                    pos.instrument_symbol,
+                    pnl,
+                    self._broker._balance,
                 )
 
     def _build_report(self, candles: CandleSeries) -> BacktestReport:

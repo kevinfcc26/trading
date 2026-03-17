@@ -58,9 +58,9 @@ class TestBuildFeatureMatrix:
         """AC-1: no NaN values survive after warmup drop."""
         assert not self.features.isnull().any().any()
 
-    def test_build_column_count_is_7(self):
-        """AC-1: exactly 7 feature columns."""
-        assert len(self.features.columns) == 7
+    def test_build_column_count_matches_feature_names(self):
+        """AC-1: column count matches FEATURE_NAMES (currently 17)."""
+        assert len(self.features.columns) == len(FEATURE_NAMES)
 
     def test_build_drops_warmup_rows(self):
         """AC-1: warmup rows with NaN indicators are removed; row count < input."""
@@ -90,10 +90,13 @@ class TestGenerateLabels:
         assert not any(idx in labels.index for idx in last_indices)
 
     def test_labels_index_subset_of_features(self):
-        """AC-2: labels and features share a non-empty common index after inner-join."""
-        features = self.fe.build_feature_matrix(self.df)
-        labels = self.fe.generate_labels(self.df)
-        # Inner-join on index (as done in execute()) must produce rows
+        """AC-2: labels and features share a non-empty common index after inner-join.
+
+        Uses 500 rows so EMA200 warmup (199 bars) still leaves overlap with labels.
+        """
+        df = _make_ohlcv(500)
+        features = self.fe.build_feature_matrix(df)
+        labels = self.fe.generate_labels(df)
         common_idx = features.index.intersection(labels.index)
         assert len(common_idx) > 0, "No common indices between features and labels"
         assert set(labels.loc[common_idx].unique()).issubset({0, 1, 2})

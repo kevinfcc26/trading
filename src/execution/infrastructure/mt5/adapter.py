@@ -72,7 +72,6 @@ class MT5Adapter:
             "sl": order.stop_loss or 0.0,
             "tp": order.take_profit or 0.0,
             "type_filling": _ORDER_FILLING_IOC,
-            "comment": f"brocker:{order.id}",
         }
 
         result = mt5.order_send(request)
@@ -114,7 +113,6 @@ class MT5Adapter:
             "position": int(position.broker_position_id),
             "price": price,
             "type_filling": _ORDER_FILLING_IOC,
-            "comment": f"close:{position.id}",
         }
         result = mt5.order_send(request)
         if result is None or result.retcode != 10009:
@@ -140,6 +138,24 @@ class MT5Adapter:
 
         candles = mt5_candles_to_domain(rates, symbol, timeframe)
         return CandleSeries(instrument_symbol=symbol, timeframe=timeframe, candles=candles)
+
+    async def get_closed_pnl(self, symbol: str, broker_position_id: str) -> float | None:
+        """Return realized PnL for a closed position, or None if not found."""
+        import MetaTrader5 as mt5
+        from datetime import datetime, timezone, timedelta
+
+        date_from = datetime.now(timezone.utc) - timedelta(days=7)
+        date_to = datetime.now(timezone.utc)
+        deals = mt5.history_deals_get(date_from, date_to, group=symbol)
+        if not deals:
+            return None
+        total = 0.0
+        found = False
+        for deal in deals:
+            if str(deal.position_id) == str(broker_position_id):
+                total += deal.profit
+                found = True
+        return total if found else None
 
     async def get_current_price(self, symbol: str) -> float:
         import MetaTrader5 as mt5  # type: ignore[import]
